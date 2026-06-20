@@ -38,6 +38,10 @@ DEFAULT_CONFIG = {
     "update_interval": 600,  # seconds (10 min)
     "current_city": None,  # None = auto GPS
     "language": "fr",
+    # Open-Meteo model. "meteofrance_seamless" = Météo-France AROME (1.3km,
+    # autorité officielle FR) + ARPEGE global en fallback hors zone haute-réso.
+    # Empty string "" = Open-Meteo best_match (auto-sélection par région).
+    "weather_model": "meteofrance_seamless",
 }
 
 WEATHER_EMOJIS = {
@@ -173,11 +177,11 @@ def get_gps_location():
         return 48.8566, 2.3522  # Default: Paris
 
 
-def fetch_weather(lat, lon, api_key, units="metric", lang="fr"):
-    """Fetch weather from OpenWeatherMap API."""
+def fetch_weather(lat, lon, api_key, units="metric", lang="fr", model="meteofrance_seamless"):
+    """Fetch weather. Open-Meteo (Météo-France model) by default; OpenWeatherMap if a key is set."""
     if not api_key:
-        # Use Open-Meteo as free fallback (no API key needed)
-        return fetch_weather_open_meteo(lat, lon, units)
+        # Open-Meteo — free, no key. Default model = Météo-France (officiel FR).
+        return fetch_weather_open_meteo(lat, lon, units, model)
 
     url = "https://api.openweathermap.org/data/2.5/weather"
     params = {
@@ -204,11 +208,11 @@ def fetch_weather(lat, lon, api_key, units="metric", lang="fr"):
         }
     except Exception as e:
         print(f"[Weather] OpenWeatherMap error: {e}")
-        return fetch_weather_open_meteo(lat, lon, units)
+        return fetch_weather_open_meteo(lat, lon, units, model)
 
 
-def fetch_weather_open_meteo(lat, lon, units="metric"):
-    """Free fallback weather API — no key needed."""
+def fetch_weather_open_meteo(lat, lon, units="metric", model="meteofrance_seamless"):
+    """Open-Meteo weather — free, no key. `model` picks the forecast model (empty = best_match)."""
     temp_unit = "celsius" if units == "metric" else "fahrenheit"
     wind_unit = "kmh" if units == "metric" else "mph"
     url = "https://api.open-meteo.com/v1/forecast"
@@ -220,6 +224,8 @@ def fetch_weather_open_meteo(lat, lon, units="metric"):
         "wind_speed_unit": wind_unit,
         "timezone": "auto",
     }
+    if model:
+        params["models"] = model
     try:
         r = requests.get(url, params=params, timeout=10)
         r.raise_for_status()
@@ -580,6 +586,7 @@ class WeatherMenuBarApp(rumps.App):
                 self.config.get("api_key", ""),
                 self.config.get("units", "metric"),
                 self.config.get("language", "fr"),
+                self.config.get("weather_model", "meteofrance_seamless"),
             )
 
             if data:

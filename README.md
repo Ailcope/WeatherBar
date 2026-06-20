@@ -11,7 +11,7 @@ App menu bar macOS qui affiche la météo en live — 100% Python, sans Xcode.
 - **📍 Géolocalisation GPS** automatique
 - **⭐ Villes favorites** avec recherche et sélection rapide
 - **🔄 Mise à jour automatique** toutes les 10 minutes
-- **🌐 Fonctionne sans clé API** (Open-Meteo gratuit) ou avec OpenWeatherMap
+- **🌐 Fonctionne sans clé API** (Open-Meteo / modèle Météo-France officiel) ou avec OpenWeatherMap
 
 ## 🚀 Installation
 
@@ -41,9 +41,16 @@ La configuration est stockée dans `~/.config/WeatherMenuBar/` :
 
 ### Clé API (optionnel)
 
-Sans clé API, l'app utilise **Open-Meteo** (gratuit, sans inscription).
+Sans clé API, l'app utilise **Open-Meteo** (gratuit, sans inscription) avec le
+modèle **Météo-France** (AROME 1.3 km) — la source officielle pour la France,
+la plus proche de l'app Météo d'Apple.
 
-Pour des données plus détaillées, créez un compte gratuit sur [openweathermap.org](https://openweathermap.org/appid) et entrez votre clé via le menu.
+Pour changer de modèle, éditez `weather_model` dans `config.json` :
+- `"meteofrance_seamless"` — Météo-France (défaut, optimal en France/Europe)
+- `"ecmwf_ifs025"` — ECMWF, meilleur modèle global
+- `""` — Open-Meteo best_match (auto-sélection par région)
+
+Pour des données OpenWeatherMap, créez un compte gratuit sur [openweathermap.org](https://openweathermap.org/appid) et entrez votre clé via le menu.
 
 ## 🔧 Lancement automatique au démarrage
 
