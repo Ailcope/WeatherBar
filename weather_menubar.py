@@ -3,8 +3,11 @@
 WeatherMenuBar — Live weather in your macOS menu bar.
 Features:
   • Live weather display (emoji + temp) in the menu bar
+  • Hourly + next-day forecast, daily min/max, sunrise/sunset
+  • Air quality index (European AQI)
   • Auto-detect location via GPS (CoreLocation)
-  • Favorite cities with quick switching
+  • Favorite cities with quick switching (add / remove)
+  • Selectable weather model (Météo-France, ECMWF, ICON, auto)
   • OpenWeatherMap API integration
 """
 
@@ -57,6 +60,24 @@ WEATHER_EMOJIS = {
 }
 
 UNIT_SYMBOLS = {"metric": "°C", "imperial": "°F"}
+
+# Selectable Open-Meteo models (id, label). "" = best_match (auto by region).
+WEATHER_MODELS = [
+    ("meteofrance_seamless", "Météo-France (officiel FR)"),
+    ("ecmwf_ifs025", "ECMWF (global)"),
+    ("icon_seamless", "ICON (Allemagne)"),
+    ("", "Auto (best match)"),
+]
+
+# European AQI bands: (upper_bound, label, emoji)
+AQI_BANDS = [
+    (20, "Bon", "🟢"),
+    (40, "Moyen", "🟡"),
+    (60, "Dégradé", "🟠"),
+    (80, "Mauvais", "🔴"),
+    (100, "Très mauvais", "🟣"),
+    (float("inf"), "Extrême", "🟤"),
+]
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────────
@@ -212,7 +233,8 @@ def fetch_weather(lat, lon, api_key, units="metric", lang="fr", model="meteofran
 
 
 def fetch_weather_open_meteo(lat, lon, units="metric", model="meteofrance_seamless"):
-    """Open-Meteo weather — free, no key. `model` picks the forecast model (empty = best_match)."""
+    """Open-Meteo weather — free, no key. Returns current conditions + daily extremes,
+    sun times, and an hourly forecast. `model` picks the forecast model ("" = best_match)."""
     temp_unit = "celsius" if units == "metric" else "fahrenheit"
     wind_unit = "kmh" if units == "metric" else "mph"
     url = "https://api.open-meteo.com/v1/forecast"
@@ -220,6 +242,9 @@ def fetch_weather_open_meteo(lat, lon, units="metric", model="meteofrance_seamle
         "latitude": lat,
         "longitude": lon,
         "current": "temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m",
+        "hourly": "temperature_2m,weather_code",
+        "daily": "temperature_2m_max,temperature_2m_min,sunrise,sunset,weather_code",
+        "forecast_days": 2,
         "temperature_unit": temp_unit,
         "wind_speed_unit": wind_unit,
         "timezone": "auto",
@@ -232,23 +257,87 @@ def fetch_weather_open_meteo(lat, lon, units="metric", model="meteofrance_seamle
         data = r.json()
         current = data["current"]
         wmo = current.get("weather_code", 0)
-        emoji = wmo_to_emoji(wmo)
 
-        # Reverse geocode for city name
-        city = reverse_geocode(lat, lon)
-
-        return {
+        result = {
             "temp": round(current["temperature_2m"]),
             "feels_like": round(current["apparent_temperature"]),
             "humidity": round(current["relative_humidity_2m"]),
             "description": wmo_description(wmo),
             "icon": "01d",
-            "emoji": emoji,
-            "city": city,
+            "emoji": wmo_to_emoji(wmo),
+            "city": reverse_geocode(lat, lon),
             "wind_speed": round(current["wind_speed_10m"], 1),
         }
+        result.update(parse_open_meteo_forecast(data, current.get("time", "")))
+        return result
     except Exception as e:
         print(f"[Weather] Open-Meteo error: {e}")
+        return None
+
+
+def parse_open_meteo_forecast(data, current_time, max_hours=4):
+    """Pure: extract today's min/max, sun times, next hours, and tomorrow from a response."""
+    out = {}
+    daily = data.get("daily", {})
+    try:
+        out["temp_max"] = round(daily["temperature_2m_max"][0])
+        out["temp_min"] = round(daily["temperature_2m_min"][0])
+    except (KeyError, IndexError, TypeError):
+        pass
+    try:
+        out["sunrise"] = daily["sunrise"][0][11:16]  # ISO "...T05:32" -> "05:32"
+        out["sunset"] = daily["sunset"][0][11:16]
+    except (KeyError, IndexError, TypeError):
+        pass
+    try:
+        out["tomorrow"] = {
+            "tmax": round(daily["temperature_2m_max"][1]),
+            "tmin": round(daily["temperature_2m_min"][1]),
+            "emoji": wmo_to_emoji(daily["weather_code"][1]),
+        }
+    except (KeyError, IndexError, TypeError):
+        pass
+
+    hourly = data.get("hourly", {})
+    times = hourly.get("time", [])
+    temps = hourly.get("temperature_2m", [])
+    codes = hourly.get("weather_code", [])
+    next_hours = []
+    for i, t in enumerate(times):
+        if t > current_time and i < len(temps) and i < len(codes):
+            next_hours.append({
+                "label": t[11:13] + "h",  # "...T22:00" -> "22h"
+                "temp": round(temps[i]),
+                "emoji": wmo_to_emoji(codes[i]),
+            })
+            if len(next_hours) >= max_hours:
+                break
+    out["hourly"] = next_hours
+    return out
+
+
+def aqi_info(aqi):
+    """Map a European AQI value to (label, emoji)."""
+    for upper, label, emoji in AQI_BANDS:
+        if aqi <= upper:
+            return label, emoji
+    return "?", "⚪"
+
+
+def fetch_air_quality(lat, lon):
+    """Fetch European Air Quality Index from Open-Meteo (free, no key)."""
+    url = "https://air-quality-api.open-meteo.com/v1/air-quality"
+    params = {"latitude": lat, "longitude": lon, "current": "european_aqi", "timezone": "auto"}
+    try:
+        r = requests.get(url, params=params, timeout=10)
+        r.raise_for_status()
+        aqi = r.json().get("current", {}).get("european_aqi")
+        if aqi is None:
+            return None
+        label, emoji = aqi_info(aqi)
+        return {"aqi": round(aqi), "label": label, "emoji": emoji}
+    except Exception as e:
+        print(f"[AQI] error: {e}")
         return None
 
 
@@ -387,6 +476,24 @@ class WeatherMenuBarApp(rumps.App):
         self.menu_wind.set_callback(None)
         self.menu.add(self.menu_wind)
 
+        self.menu_air = rumps.MenuItem("")
+        self.menu_air.set_callback(None)
+        self.menu.add(self.menu_air)
+
+        self.menu_minmax = rumps.MenuItem("")
+        self.menu_minmax.set_callback(None)
+        self.menu.add(self.menu_minmax)
+
+        self.menu_sun = rumps.MenuItem("")
+        self.menu_sun.set_callback(None)
+        self.menu.add(self.menu_sun)
+
+        self.menu.add(rumps.separator)
+
+        # ── Forecast submenu (populated on each refresh)
+        self.menu_forecast = rumps.MenuItem("📅 Prévisions")
+        self.menu.add(self.menu_forecast)
+
         self.menu.add(rumps.separator)
 
         # ── Location section
@@ -419,6 +526,11 @@ class WeatherMenuBarApp(rumps.App):
         )
         self.menu.add(self.menu_units)
 
+        # ── Weather source (model) picker
+        self.menu_source = rumps.MenuItem("🛰️ Source")
+        self.menu.add(self.menu_source)
+        self._build_source_menu()
+
         self.menu.add(rumps.separator)
 
         # ── Refresh / Quit
@@ -429,19 +541,51 @@ class WeatherMenuBarApp(rumps.App):
         self.menu.add(self.menu_quit)
 
     def _rebuild_favorites_menu(self):
-        """Rebuild the favorites submenu items."""
-        # Remove old favorite items
-        keys_to_remove = [k for k in self.menu.keys() if isinstance(k, str) and k.startswith("  ★")]
+        """Rebuild favorites as submenus (Choisir / Retirer), preserving order."""
+        # Remove old favorite parent items
+        keys_to_remove = [k for k in self.menu.keys() if isinstance(k, str) and k.startswith("★ ")]
         for k in keys_to_remove:
             del self.menu[k]
 
-        # Add current favorites after the title
-        for i, fav in enumerate(self.favorites):
-            key = f"  ★ {fav['name']}"
-            item = rumps.MenuItem(key)
-            item.set_callback(lambda sender, f=fav: self._select_favorite(f))
-            # Insert after the favorites title
-            self.menu.insert_after(self.menu_fav_title.title, item)
+        after = self.menu_fav_title.title
+        for fav in self.favorites:
+            parent = rumps.MenuItem(f"★ {fav['name']}")
+            parent.add(rumps.MenuItem(
+                "✓ Choisir cette ville",
+                callback=lambda sender, f=fav: self._select_favorite(f),
+            ))
+            parent.add(rumps.MenuItem(
+                "✕ Retirer des favoris",
+                callback=lambda sender, f=fav: self._remove_favorite(f),
+            ))
+            self.menu.insert_after(after, parent)
+            after = parent.title
+
+    def _remove_favorite(self, fav):
+        """Remove a city from favorites."""
+        self.favorites = [f for f in self.favorites if f["name"] != fav["name"]]
+        save_favorites(self.favorites)
+        self._rebuild_favorites_menu()
+        rumps.notification("WeatherMenuBar", "", f"✕ {fav['name']} retiré des favoris")
+
+    def _build_source_menu(self):
+        """(Re)build the weather-model picker submenu with a checkmark on the active model."""
+        if len(self.menu_source):  # submenu NSMenu exists only once populated
+            self.menu_source.clear()
+        current = self.config.get("weather_model", "meteofrance_seamless")
+        label = next((lbl for mid, lbl in WEATHER_MODELS if mid == current), "Auto")
+        self.menu_source.title = f"🛰️ Source : {label.split(' (')[0]}"
+        for mid, lbl in WEATHER_MODELS:
+            item = rumps.MenuItem(lbl, callback=lambda sender, m=mid: self._select_model(m))
+            item.state = 1 if mid == current else 0
+            self.menu_source.add(item)
+
+    def _select_model(self, model_id):
+        """Switch the active Open-Meteo model and refresh."""
+        self.config["weather_model"] = model_id
+        save_config(self.config)
+        self._build_source_menu()
+        self._refresh_weather_async()
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
@@ -607,12 +751,57 @@ class WeatherMenuBarApp(rumps.App):
                 self.menu_feels.title = f"🌡️ Ressenti : {data['feels_like']}{unit}"
                 self.menu_humidity.title = f"💧 Humidité : {data['humidity']}%"
                 self.menu_wind.title = f"💨 Vent : {data['wind_speed']} {wind_unit}"
+
+                # Min/max + sun times (Open-Meteo; absent with an OWM key)
+                if "temp_min" in data and "temp_max" in data:
+                    self.menu_minmax.title = f"↓ {data['temp_min']}{unit}    ↑ {data['temp_max']}{unit}"
+                else:
+                    self.menu_minmax.title = ""
+                if data.get("sunrise") and data.get("sunset"):
+                    self.menu_sun.title = f"🌅 {data['sunrise']}    🌇 {data['sunset']}"
+                else:
+                    self.menu_sun.title = ""
+
+                self._update_forecast_menu(data, unit)
             else:
                 self.title = "⚠️ Erreur"
                 self.menu_details.title = "❌ Impossible de charger la météo"
+
+            # Air quality — best-effort, separate endpoint, never blocks weather
+            self._update_air_quality(lat, lon)
         except Exception as e:
             print(f"[Refresh] Error: {e}")
             self.title = "⚠️ ?"
+
+    def _update_forecast_menu(self, data, unit):
+        """Repopulate the 📅 Prévisions submenu from forecast data."""
+        if len(self.menu_forecast):  # submenu NSMenu exists only once populated
+            self.menu_forecast.clear()
+        hours = data.get("hourly", [])
+        tomorrow = data.get("tomorrow")
+        if not hours and not tomorrow:
+            placeholder = rumps.MenuItem("— indisponible")
+            placeholder.set_callback(None)
+            self.menu_forecast.add(placeholder)
+            return
+        for h in hours:
+            item = rumps.MenuItem(f"{h['label']}   {h['emoji']} {h['temp']}{unit}")
+            item.set_callback(None)
+            self.menu_forecast.add(item)
+        if tomorrow:
+            item = rumps.MenuItem(
+                f"Demain   {tomorrow['emoji']} {tomorrow['tmin']}–{tomorrow['tmax']}{unit}"
+            )
+            item.set_callback(None)
+            self.menu_forecast.add(item)
+
+    def _update_air_quality(self, lat, lon):
+        """Fetch and display the air-quality index."""
+        aq = fetch_air_quality(lat, lon)
+        if aq:
+            self.menu_air.title = f"{aq['emoji']} Air : {aq['label']} (AQI {aq['aqi']})"
+        else:
+            self.menu_air.title = "🌫️ Air : —"
 
 
 # ─── Entry point ─────────────────────────────────────────────────────────────────
