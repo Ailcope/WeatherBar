@@ -360,6 +360,12 @@ class WeatherMenuBarApp(rumps.App):
         # Initial weather fetch in background
         self._refresh_weather_async()
 
+        # Periodic auto-refresh — interval from config (update_interval, seconds)
+        self.refresh_timer = rumps.Timer(
+            self.auto_refresh, self.config.get("update_interval", 600)
+        )
+        self.refresh_timer.start()
+
     def _build_menu(self):
         """Build the dropdown menu."""
         self.menu.clear()
@@ -560,7 +566,6 @@ class WeatherMenuBarApp(rumps.App):
 
     # ── Timer for periodic refresh ────────────────────────────────────────────
 
-    @rumps.timer(600)  # Every 10 minutes
     def auto_refresh(self, _):
         self._refresh_weather_async()
 
