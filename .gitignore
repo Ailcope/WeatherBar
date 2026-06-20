@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# macOS
+.DS_Store
+
+# Local app config (user-generated)
+config.json
+favorites.json
+
+# Tool session dirs
+.antigravitycli/
+.claude/
